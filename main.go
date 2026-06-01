@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,19 +32,50 @@ func main() {
 }
 
 func cliMode() {
-	cmd := os.Args[1]
-	args := os.Args[2:]
+	rawArgs := os.Args[1:]
+	timeoutMs := defaultTimeoutMs
+	args := rawArgs
 
-	if cmd == "-v" || cmd == "--version" {
-		fmt.Printf("ZeroTest v%s\n", version)
-		return
+loop:
+	for len(args) > 0 && strings.HasPrefix(args[0], "-") {
+		switch args[0] {
+		case "--timeout", "-t":
+			if len(args) < 2 {
+				fmt.Fprintln(os.Stderr, "error: --timeout requires a value in milliseconds")
+				os.Exit(1)
+			}
+			val, err := strconv.Atoi(args[1])
+			if err != nil || val <= 0 {
+				fmt.Fprintln(os.Stderr, "error: --timeout must be a positive integer (milliseconds)")
+				os.Exit(1)
+			}
+			timeoutMs = val
+			args = args[2:]
+			continue loop
+		case "--":
+			args = args[1:]
+			break loop
+		case "-v", "--version":
+			fmt.Printf("ZeroTest v%s\n", version)
+			return
+		case "-h", "--help":
+			printCLIHelp()
+			return
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[0])
+			os.Exit(1)
+		}
 	}
-	if cmd == "-h" || cmd == "--help" {
+
+	if len(args) == 0 {
 		printCLIHelp()
 		return
 	}
 
-	report := runAndDiagnose(context.Background(), cmd, args, "", defaultTimeoutMs, "", "")
+	cmd := args[0]
+	cmdArgs := args[1:]
+
+	report := runAndDiagnose(context.Background(), cmd, cmdArgs, "", timeoutMs, "", "")
 
 	enc := json.NewEncoder(os.Stdout)
 	enc.SetIndent("", "  ")
@@ -57,18 +89,25 @@ func cliMode() {
 }
 
 func printCLIHelp() {
-	fmt.Println(`ZeroTest v` + version + ` — diagnostic JSON for any command output
+	fmt.Printf(`ZeroTest v%s - diagnostic JSON for any command output
 
 Usage:
-  zerotest <command> [args...]    Run a command and print JSON diagnostics
-  zerotest -h, --help             Show this help
-  zerotest -v, --version          Show version
+  zerotest [flags] <command> [args...]
+
+Flags:
+  -t, --timeout <ms>    Kill the command after <ms> and return diagnostics so far
+                         (default 120000). Useful for servers like Django runserver
+                         that print errors but never exit.
+  -h, --help            Show this help
+  -v, --version         Show version
 
 Examples:
   zerotest python -m mypy src/app.py
   zerotest go build ./...
   zerotest tsc --noEmit
-  zerotest gcc main.c -o main`)
+  zerotest gcc main.c -o main
+  zerotest --timeout 5000 python manage.py runserver
+`, version)
 }
 
 func mcpMode() {
