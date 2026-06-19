@@ -363,15 +363,19 @@ curl -sL https://github.com/scopophobic/ZeroTest/releases/latest/download/zerote
 <span class="comment"># Compile</span>
 <span class="prompt">$</span> zerotest gcc main.c -o main
 
-<span class="comment"># Long-running (e.g. Django) — capture errors w/o waiting forever</span>
+<span class="comment"># Long-running (e.g. Django) — see output live, ^C to get JSON</span>
+<span class="prompt">$</span> zerotest --live python manage.py runserver
+
+<span class="comment"># Or with a timer</span>
 <span class="prompt">$</span> zerotest --timeout 5000 python manage.py runserver
 
 <span class="comment"># Help / version</span>
 <span class="prompt">$</span> zerotest -h
 <span class="prompt">$</span> zerotest -v</pre>
       <p style="margin-top:12px;font-size:12px;color:var(--muted);">
-        <code>--timeout &lt;ms&gt;</code> kills the process after N ms and returns diagnostics so far.
-        Default 120s. Useful for servers that print errors but never exit.
+        <code>--live</code> shows child output in real-time (JSON goes to stderr).
+        <code>--timeout &lt;ms&gt;</code> auto-kills after N ms.
+        Default 120s. Press Ctrl+C to interrupt any running command.
       </p>
     </div>
 

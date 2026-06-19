@@ -50,18 +50,14 @@ zerotest gcc main.c -o main
 The JSON is printed to stdout. Exit code matches the wrapped command.
 
 > **Long-running commands** (e.g., `python manage.py runserver`):  
-> Use `--timeout` so ZeroTest doesn't hang waiting for a process that prints errors but never exits:
+> Add `--live` to see output in real-time, then press Ctrl+C to stop and get JSON:
+> ```bash
+> zerotest --live python manage.py runserver
+> ```
+> Or use `--timeout <ms>` to auto-kill after N milliseconds:
 > ```bash
 > zerotest --timeout 5000 python manage.py runserver
 > ```
-> After 5 seconds ZeroTest kills the server and returns whatever diagnostics were captured.
-
-> **Long-running commands** (e.g., `python manage.py runserver`):  
-> Use `--timeout` so ZeroTest doesn't hang waiting for a process that prints errors but never exits:
-> ```bash
-> zerotest --timeout 5000 python manage.py runserver
-> ```
-> After 5 seconds ZeroTest kills the server and returns whatever diagnostics were captured.
 
 ### MCP server mode
 

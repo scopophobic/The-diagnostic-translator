@@ -6,10 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
@@ -34,6 +37,7 @@ func main() {
 func cliMode() {
 	rawArgs := os.Args[1:]
 	timeoutMs := defaultTimeoutMs
+	live := false
 	args := rawArgs
 
 loop:
@@ -51,6 +55,10 @@ loop:
 			}
 			timeoutMs = val
 			args = args[2:]
+			continue loop
+		case "--live", "-l":
+			live = true
+			args = args[1:]
 			continue loop
 		case "--":
 			args = args[1:]
@@ -72,12 +80,19 @@ loop:
 		return
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
 	cmd := args[0]
 	cmdArgs := args[1:]
 
-	report := runAndDiagnose(context.Background(), cmd, cmdArgs, "", timeoutMs, "", "")
+	report := runAndDiagnose(ctx, cmd, cmdArgs, "", timeoutMs, "", "", live)
 
-	enc := json.NewEncoder(os.Stdout)
+	out := os.Stdout
+	if live {
+		out = os.Stderr
+	}
+	enc := json.NewEncoder(out)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(report); err != nil {
 		fmt.Fprintf(os.Stderr, "error encoding output: %v\n", err)
@@ -95,17 +110,19 @@ Usage:
   zerotest [flags] <command> [args...]
 
 Flags:
-  -t, --timeout <ms>    Kill the command after <ms> and return diagnostics so far
-                         (default 120000). Useful for servers like Django runserver
-                         that print errors but never exit.
-  -h, --help            Show this help
-  -v, --version         Show version
+  -l, --live           Show command output in real-time (JSON goes to stderr)
+  -t, --timeout <ms>   Kill the command after <ms> (default 120000)
+  -h, --help           Show this help
+  -v, --version        Show version
+
+Press Ctrl+C to stop long-running commands and get diagnostics.
 
 Examples:
   zerotest python -m mypy src/app.py
   zerotest go build ./...
   zerotest tsc --noEmit
   zerotest gcc main.c -o main
+  zerotest --live python manage.py runserver    # see output live, ^C for JSON
   zerotest --timeout 5000 python manage.py runserver
 `, version)
 }
@@ -167,11 +184,11 @@ func diagnoseHandler(ctx context.Context, request mcp.CallToolRequest) (*mcp.Cal
 	languageHint := strings.TrimSpace(request.GetString("language_hint", ""))
 	toolchainHint := strings.TrimSpace(request.GetString("toolchain_hint", ""))
 
-	report := runAndDiagnose(ctx, command, args, cwd, timeoutMs, languageHint, toolchainHint)
+	report := runAndDiagnose(ctx, command, args, cwd, timeoutMs, languageHint, toolchainHint, false)
 	return mcp.NewToolResultStructuredOnly(report), nil
 }
 
-func runAndDiagnose(ctx context.Context, command string, args []string, cwd string, timeoutMs int, languageHint string, toolchainHint string) DiagnosticReport {
+func runAndDiagnose(ctx context.Context, command string, args []string, cwd string, timeoutMs int, languageHint string, toolchainHint string, live bool) DiagnosticReport {
 	start := time.Now()
 
 	execCtx := ctx
@@ -185,11 +202,18 @@ func runAndDiagnose(ctx context.Context, command string, args []string, cwd stri
 	if cwd != "" {
 		cmd.Dir = cwd
 	}
+	cmd.Stdin = bytes.NewReader(nil)
+	cmd.Env = os.Environ()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	if live {
+		cmd.Stdout = io.MultiWriter(&stdout, os.Stdout)
+		cmd.Stderr = io.MultiWriter(&stderr, os.Stderr)
+	} else {
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+	}
 
 	runErr := cmd.Run()
 	execMs := time.Since(start).Milliseconds()
@@ -198,12 +222,14 @@ func runAndDiagnose(ctx context.Context, command string, args []string, cwd stri
 	if runErr != nil {
 		if exitErr := new(exec.ExitError); errors.As(runErr, &exitErr) {
 			exitCode = exitErr.ExitCode()
-		} else if errors.Is(runErr, context.DeadlineExceeded) {
-			exitCode = -1
 		} else {
 			exitCode = 1
 		}
 	}
+
+	ctxDone := execCtx.Err()
+	isTimeout := errors.Is(ctxDone, context.DeadlineExceeded)
+	isInterrupt := errors.Is(ctxDone, context.Canceled)
 
 	stdoutStr := stdout.String()
 	stderrStr := stderr.String()
@@ -225,11 +251,18 @@ func runAndDiagnose(ctx context.Context, command string, args []string, cwd stri
 
 	diagnostics := parseDiagnostics(output, language)
 
-	if errors.Is(runErr, context.DeadlineExceeded) {
+	if isTimeout {
 		diagnostics = append(diagnostics, Diagnostic{
 			Code:     "DT_TIMEOUT",
 			Severity: "error",
 			Message:  "Command timed out before completion",
+		})
+	}
+	if isInterrupt {
+		diagnostics = append(diagnostics, Diagnostic{
+			Code:     "DT_INTERRUPT",
+			Severity: "error",
+			Message:  "Command interrupted (Ctrl+C or signal)",
 		})
 	}
 
